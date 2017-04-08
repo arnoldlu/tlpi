@@ -31,6 +31,8 @@
 #include "tlpi_hdr.h"
 
 static volatile sig_atomic_t gotAlarm = 0;
+static struct timeval start_timer;
+
                         /* Set nonzero on receipt of SIGALRM */
 
 /* Retrieve and display the real time, and (if 'includeTimer' is
@@ -40,8 +42,8 @@ static void
 displayTimes(const char *msg, Boolean includeTimer)
 {
     struct itimerval itv;
-    static struct timeval start;
     struct timeval curr;
+    static struct timeval start;
     static int callNum = 0;             /* Number of calls to this function */
 
     if (callNum == 0)                   /* Initialize elapsed time meter */
@@ -53,13 +55,13 @@ displayTimes(const char *msg, Boolean includeTimer)
 
     if (gettimeofday(&curr, NULL) == -1)
         errExit("gettimeofday");
-    printf("%-7s %6.2f", msg, curr.tv_sec - start.tv_sec +
+    printf("%-7s %8.6f", msg, curr.tv_sec - start.tv_sec +
                         (curr.tv_usec - start.tv_usec) / 1000000.0);
 
     if (includeTimer) {
         if (getitimer(ITIMER_REAL, &itv) == -1)
             errExit("getitimer");
-        printf("  %6.2f  %6.2f",
+        printf("  %8.6f  %8.6f",
                 itv.it_value.tv_sec + itv.it_value.tv_usec / 1000000.0,
                 itv.it_interval.tv_sec + itv.it_interval.tv_usec / 1000000.0);
     }
@@ -71,6 +73,14 @@ displayTimes(const char *msg, Boolean includeTimer)
 static void
 sigalrmHandler(int sig)
 {
+    struct timeval curr;
+
+    //With the following code, get the accuracy of setitimer.
+    if (gettimeofday(&curr, NULL) == -1)
+        errExit("gettimeofday");
+    printf("%-7s %8.6f\n", "Expires", curr.tv_sec - start_timer.tv_sec +
+                        (curr.tv_usec - start_timer.tv_usec) / 1000000.0);
+
     gotAlarm = 1;
 }
 
@@ -84,7 +94,7 @@ main(int argc, char *argv[])
     struct sigaction sa;
 
     if (argc > 1 && strcmp(argv[1], "--help") == 0)
-        usageErr("%s [secs [usecs [int-secs [int-usecs]]]]\n", argv[0]);
+        usageErr("%s [secs [usecs [int-secs [int-usecs]]]] CLOCKS_PER_SEC=%d\n", argv[0], CLOCKS_PER_SEC);
 
     sigCnt = 0;
 
@@ -95,20 +105,23 @@ main(int argc, char *argv[])
         errExit("sigaction");
 
     /* Set timer from the command-line arguments */
-
+    //First expires
     itv.it_value.tv_sec = (argc > 1) ? getLong(argv[1], 0, "secs") : 2;
     itv.it_value.tv_usec = (argc > 2) ? getLong(argv[2], 0, "usecs") : 0;
+    //The expires after
     itv.it_interval.tv_sec = (argc > 3) ? getLong(argv[3], 0, "int-secs") : 0;
     itv.it_interval.tv_usec = (argc > 4) ? getLong(argv[4], 0, "int-usecs") : 0;
 
     /* Exit after 3 signals, or on first signal if interval is 0 */
 
     maxSigs = (itv.it_interval.tv_sec == 0 &&
-                itv.it_interval.tv_usec == 0) ? 1 : 3;
+                itv.it_interval.tv_usec == 0) ? 1 : 5;
 
     displayTimes("START:", FALSE);
     if (setitimer(ITIMER_REAL, &itv, NULL) == -1)
         errExit("setitimer");
+    if (gettimeofday(&start_timer, NULL) == -1)
+        errExit("gettimeofday");
 
     prevClock = clock();
     sigCnt = 0;
@@ -116,7 +129,6 @@ main(int argc, char *argv[])
     for (;;) {
 
         /* Inner loop consumes at least 0.5 seconds CPU time */
-
         while (((clock() - prevClock) * 10 / CLOCKS_PER_SEC) < 5) {
             if (gotAlarm) {                     /* Did we get a signal? */
                 gotAlarm = 0;
@@ -134,3 +146,25 @@ main(int argc, char *argv[])
         displayTimes("Main: ", TRUE);
     }
 }
+
+/*
+Test result with ./real_timer 1 0 0 500000:
+       Elapsed   Value Interval
+START:  0.000031
+Main:   0.500080  0.499970  0.500000
+Expires 1.000004
+ALARM:  1.000077  0.499980  0.500000
+Main:   1.000086  0.499972  0.500000
+Expires 1.500003
+ALARM:  1.500075  0.499981  0.500000
+Main:   1.500125  0.499933  0.500000
+Expires 2.000003
+ALARM:  2.000076  0.499973  0.500000
+Main:   2.000127  0.499930  0.500000
+Expires 2.500003
+ALARM:  2.500074  0.499982  0.500000
+Main:   2.500134  0.499923  0.500000
+Expires 3.000003
+ALARM:  3.000074  0.499982  0.500000
+That's all folks
+*/
